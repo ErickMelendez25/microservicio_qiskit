@@ -1,13 +1,13 @@
-qiskit==0.44.1
-qiskit-aer==0.13.0
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.4.2
+matplotlib==3.9.0
+mysql-connector-python==9.0.0
+python-dotenv==1.0.1
+joblib==1.4.2
+
+# Qiskit y módulos de ML
+qiskit==0.45.2
+qiskit-aer==0.12.2
 qiskit-machine-learning==0.6.1
-scikit-learn==1.7.0
-numpy==1.25.2
-pandas
-matplotlib
-seaborn
-fastapi
-uvicorn
-python-dotenv
-mysql-connector-python
-symengine==0.9.2
+qiskit-algorithms==0.2.2
