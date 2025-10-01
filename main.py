@@ -61,9 +61,6 @@ def conectar_bd():
     )
 
 def obtener_ultimas_lecturas_de_zona(zone_id):
-    """
-    Devuelve dict: { 'temperatura': {'valor':..., 'fecha_lectura':...}, ... }
-    """
     conn = conectar_bd()
     cursor = conn.cursor(dictionary=True)
     query = """
@@ -72,12 +69,14 @@ def obtener_ultimas_lecturas_de_zona(zone_id):
         JOIN dispositivos_sensor ds ON l.id_dispositivo_sensor = ds.id_dispositivo_sensor
         JOIN sensores s ON ds.id_sensor = s.id_sensor
         JOIN dispositivos d ON ds.id_dispositivo = d.id_dispositivo
-        WHERE d.id_zona = %s
+        WHERE d.zona_agricola_id = %s
         ORDER BY l.fecha_lectura DESC
     """
     cursor.execute(query, (zone_id,))
     rows = cursor.fetchall()
     conn.close()
+    ...
+
     if not rows:
         return {}
 
@@ -97,11 +96,12 @@ def obtener_max_fecha_lectura(zone_id):
         FROM lecturas_sensor l
         JOIN dispositivos_sensor ds ON l.id_dispositivo_sensor = ds.id_dispositivo_sensor
         JOIN dispositivos d ON ds.id_dispositivo = d.id_dispositivo
-        WHERE d.id_zona = %s
+        WHERE d.zona_agricola_id = %s
     """, (zone_id,))
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
+
 
 # ----------------- Endpoints -----------------
 @app.post("/train")

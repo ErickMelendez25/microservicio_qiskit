@@ -83,11 +83,10 @@ def conectar_bd():
 
 def leer_datos(conn, zone_id=None, limit=TRAIN_SIZE*10):
     """
-    Lee lecturas filtrando por zona (asume dispositivos.id_zona).
+    Lee lecturas filtrando por zona (dispositivos.zona_agricola_id).
     Devuelve un DataFrame con columnas: tipo_sensor, valor, fecha_lectura
     """
     if zone_id is None:
-        # lectura global (sin filtrar por zona)
         query = """
             SELECT s.tipo_sensor AS tipo_sensor, l.valor, l.fecha_lectura
             FROM lecturas_sensor l
@@ -99,21 +98,20 @@ def leer_datos(conn, zone_id=None, limit=TRAIN_SIZE*10):
         """
         df = pd.read_sql(query, conn, params=(limit,))
     else:
-        # filtrar por zona (JOIN dispositivos -> id_zona)
         query = f"""
             SELECT s.tipo_sensor AS tipo_sensor, l.valor, l.fecha_lectura
             FROM lecturas_sensor l
             JOIN dispositivos_sensor ds ON l.id_dispositivo_sensor = ds.id_dispositivo_sensor
             JOIN sensores s ON ds.id_sensor = s.id_sensor
             JOIN dispositivos d ON ds.id_dispositivo = d.id_dispositivo
-            WHERE d.id_zona = %s
+            WHERE d.zona_agricola_id = %s
             ORDER BY l.fecha_lectura ASC
             LIMIT {limit}
         """
-        # pd.read_sql con mysql connector acepta conn y params; usamos params para zone_id
         df = pd.read_sql(query, conn, params=(zone_id,))
     logging.info("Registros leídos (zone=%s): %d", str(zone_id), len(df))
     return df
+
 
 def preparar_dataset(df):
     if df is None or df.empty:
