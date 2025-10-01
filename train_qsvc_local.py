@@ -3,12 +3,16 @@
 train_qsvc_local.py
 
 Entrena un QSVC por zona con FidelityQuantumKernel usando un sampler local.
-Genera por zona:
- - modelo: outputs/zone_{zone_id}/modelo_qsvc_zone_{zone_id}.joblib
- - scaler: outputs/zone_{zone_id}/scaler_qsvc_zone_{zone_id}.joblib
- - estadísticas CSV
- - gráficos PNG (PCA, clustering, importancia)
- - metadata JSON con last_trained_timestamp
+Genera por zona en ./outputs/zone_{zone_id}/:
+ - modelo: modelo_qsvc_zone_{zone_id}.joblib
+ - scaler: scaler_qsvc_zone_{zone_id}.joblib
+ - estadisticas: estadisticas_entrenamiento.csv
+ - imagenes: superposicion_pca.png, clustering_emergente.png, importancia_sensores.png
+ - metadata: metadata.json (last_trained_at, trained_on)
+
+Notas:
+ - Ajusta las consultas SQL si tu esquema difiere.
+ - Intenta generar una imagen de Bloch multivector si Aer está disponible; si no, continúa sin ella.
 """
 
 import os
@@ -29,12 +33,25 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# Qiskit
-from qiskit.circuit.library import ZZFeatureMap
-from qiskit.primitives import Sampler
-from qiskit_machine_learning.kernels import FidelityQuantumKernel
-from qiskit_machine_learning.algorithms.classifiers import QSVC
-from qiskit.algorithms.state_fidelities import ComputeUncompute
+# Qiskit (intentar usar, pero envolvemos en try/except para evitar fallos en entornos sin Aer)
+try:
+    from qiskit.circuit.library import ZZFeatureMap
+    from qiskit.primitives import Sampler
+    from qiskit_machine_learning.kernels import FidelityQuantumKernel
+    from qiskit_machine_learning.algorithms.classifiers import QSVC
+    from qiskit.algorithms.state_fidelities import ComputeUncompute
+    QISKIT_AVAILABLE = True
+except Exception:
+    # Si no está Qiskit o alguno de sus módulos, marcaremos y seguiremos con scikit-learn fallback.
+    QISKIT_AVAILABLE = False
+
+# Para la visualización de estados (bloch) intentamos Aer / statevector
+try:
+    from qiskit import Aer, transpile
+    from qiskit.visualization import plot_bloch_multivector
+    AER_AVAILABLE = True
+except Exception:
+    AER_AVAILABLE = False
 
 # ---------- Config ----------
 TRAIN_SIZE = 300   # ajustar entre 200-500 según datos por zona
@@ -66,26 +83,40 @@ def conectar_bd():
 
 def leer_datos(conn, zone_id=None, limit=TRAIN_SIZE*10):
     """
-    Lee lecturas; si zone_id se provee, filtra por zona.
-    Se asume que la tabla lecturas_sensor tiene referencia a dispositivos con zona/ubicación.
-    Ajusta la consulta si tu esquema es distinto.
+    Lee lecturas filtrando por zona (asume dispositivos.id_zona).
+    Devuelve un DataFrame con columnas: tipo_sensor, valor, fecha_lectura
     """
-    zone_filter = f"AND d.zone_id = {int(zone_id)}" if zone_id is not None else ""
-    query = f"""
-        SELECT s.tipo_sensor AS tipo_sensor, l.valor, l.fecha_lectura, d.zone_id
-        FROM lecturas_sensor l
-        JOIN dispositivos_sensor d ON l.id_dispositivo_sensor = d.id_dispositivo_sensor
-        JOIN sensores s ON d.id_sensor = s.id_sensor
-        WHERE 1=1 {zone_filter}
-        ORDER BY l.fecha_lectura ASC
-        LIMIT {limit}
-    """
-    df = pd.read_sql(query, conn)
+    if zone_id is None:
+        # lectura global (sin filtrar por zona)
+        query = """
+            SELECT s.tipo_sensor AS tipo_sensor, l.valor, l.fecha_lectura
+            FROM lecturas_sensor l
+            JOIN dispositivos_sensor ds ON l.id_dispositivo_sensor = ds.id_dispositivo_sensor
+            JOIN sensores s ON ds.id_sensor = s.id_sensor
+            JOIN dispositivos d ON ds.id_dispositivo = d.id_dispositivo
+            ORDER BY l.fecha_lectura ASC
+            LIMIT %s
+        """
+        df = pd.read_sql(query, conn, params=(limit,))
+    else:
+        # filtrar por zona (JOIN dispositivos -> id_zona)
+        query = f"""
+            SELECT s.tipo_sensor AS tipo_sensor, l.valor, l.fecha_lectura
+            FROM lecturas_sensor l
+            JOIN dispositivos_sensor ds ON l.id_dispositivo_sensor = ds.id_dispositivo_sensor
+            JOIN sensores s ON ds.id_sensor = s.id_sensor
+            JOIN dispositivos d ON ds.id_dispositivo = d.id_dispositivo
+            WHERE d.id_zona = %s
+            ORDER BY l.fecha_lectura ASC
+            LIMIT {limit}
+        """
+        # pd.read_sql con mysql connector acepta conn y params; usamos params para zone_id
+        df = pd.read_sql(query, conn, params=(zone_id,))
     logging.info("Registros leídos (zone=%s): %d", str(zone_id), len(df))
     return df
 
 def preparar_dataset(df):
-    if df.empty:
+    if df is None or df.empty:
         return None, None, None
 
     df["fecha_lectura"] = pd.to_datetime(df["fecha_lectura"])
@@ -116,10 +147,10 @@ def preparar_dataset(df):
 
     return X, y, df_clean
 
-def escalar_y_guardar(X, zone_dir):
+def escalar_y_guardar(X, zone_dir, zone_id):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-    scaler_file = os.path.join(zone_dir, f"scaler_qsvc_zone.joblib")
+    scaler_file = os.path.join(zone_dir, f"scaler_qsvc_zone_{zone_id}.joblib")
     dump(scaler, scaler_file)
     logging.info("Scaler guardado en %s", scaler_file)
     return X_scaled, scaler_file
@@ -127,13 +158,16 @@ def escalar_y_guardar(X, zone_dir):
 # ----------- Quantum Helpers -----------
 
 def entrenar_qsvc(X_train, y_train):
+    if not QISKIT_AVAILABLE:
+        raise RuntimeError("Qiskit no está disponible en el entorno. Instala qiskit/qiskit-machine-learning.")
+
     feature_map = ZZFeatureMap(feature_dimension=X_train.shape[1], reps=2)
     sampler = Sampler()
     fidelity = ComputeUncompute(sampler)
     qkernel = FidelityQuantumKernel(feature_map=feature_map, fidelity=fidelity)
     model = QSVC(quantum_kernel=qkernel)
     model.fit(X_train, y_train)
-    return model, qkernel
+    return model, qkernel, feature_map
 
 # ----------- Output Helpers -----------
 
@@ -156,7 +190,8 @@ def graficar_superposicion(X_scaled, y, filename):
     plt.xlabel("Componente principal 1")
     plt.ylabel("Componente principal 2")
     plt.grid(True)
-    plt.savefig(filename)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150)
     plt.close()
     logging.info("🌌 Gráfico de superposición guardado en %s", filename)
 
@@ -173,7 +208,8 @@ def graficar_clustering(X_scaled, filename):
     plt.xlabel("Componente principal 1")
     plt.ylabel("Componente principal 2")
     plt.grid(True)
-    plt.savefig(filename)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150)
     plt.close()
     logging.info("🌱 Gráfico de clustering guardado en %s", filename)
 
@@ -184,9 +220,35 @@ def graficar_importancia_sensores(X_scaled, y, filename):
     ax.set_title("📊 Correlación de sensores con clases (colapso)")
     plt.grid(True, axis="y")
     plt.tight_layout()
-    plt.savefig(filename)
+    plt.savefig(filename, dpi=150)
     plt.close()
     logging.info("📊 Gráfico de importancia de sensores guardado en %s", filename)
+
+def generar_bloch_image(feature_map, sample_vector, filename):
+    """
+    Intenta generar una imagen Bloch (multivector) para sample_vector usando Aer (statevector).
+    Si no está Aer disponible, se ignora.
+    """
+    if not (QISKIT_AVAILABLE and AER_AVAILABLE):
+        logging.info("Aer o Qiskit no disponibles: saltando imagen Bloch.")
+        return None
+
+    try:
+        # crear circuito con parametros y obtener statevector
+        circuit = feature_map.bind_parameters(sample_vector)
+        backend = Aer.get_backend('statevector_simulator')
+        qc_transpiled = transpile(circuit, backend=backend)
+        job = backend.run(qc_transpiled) if hasattr(backend, "run") else backend.run(qc_transpiled)
+        result = job.result()
+        state = result.get_statevector()
+        fig = plot_bloch_multivector(state)
+        fig.savefig(filename, dpi=150)
+        plt.close(fig)
+        logging.info("🔵 Imagen Bloch guardada en %s", filename)
+        return filename
+    except Exception as e:
+        logging.exception("No se pudo generar Bloch image: %s", str(e))
+        return None
 
 # -------------- Metadata ----------------
 
@@ -208,6 +270,11 @@ def leer_metadata(zone_dir):
 
 # -------------- Entrenamiento por zona --------------
 
+def prepare_zone_dir(zone_id):
+    zone_dir = os.path.join(OUTPUT_DIR, f"zone_{zone_id}")
+    asegurar_dir(zone_dir)
+    return zone_dir
+
 def train_zone(zone_id):
     """
     Entrena (o reentrena) para una zona específica.
@@ -218,18 +285,19 @@ def train_zone(zone_id):
         df = leer_datos(conn, zone_id=zone_id)
         conn.close()
 
-        if df.empty:
+        if df is None or df.empty:
             raise ValueError("No hay datos para la zona solicitada.")
 
         X, y, df_clean = preparar_dataset(df)
-        X_scaled, scaler_file = escalar_y_guardar(X, prepare_zone_dir(zone_id))
-
-        model, qkernel = entrenar_qsvc(X_scaled, y)
-
         zone_dir = prepare_zone_dir(zone_id)
-        asegurar_dir(zone_dir)
+        X_scaled, scaler_file = escalar_y_guardar(X, zone_dir, zone_id)
 
-        model_file = os.path.join(zone_dir, f"modelo_qsvc_zone.joblib")
+        if not QISKIT_AVAILABLE:
+            raise RuntimeError("Qiskit no disponible en el entorno. Instala qiskit y qiskit-machine-learning.")
+
+        model, qkernel, feature_map = entrenar_qsvc(X_scaled, y)
+
+        model_file = os.path.join(zone_dir, f"modelo_qsvc_zone_{zone_id}.joblib")
         dump(model, model_file)
         logging.info("✅ Modelo guardado en %s", model_file)
 
@@ -244,11 +312,23 @@ def train_zone(zone_id):
         pca_file = os.path.join(zone_dir, "superposicion_pca.png")
         cluster_file = os.path.join(zone_dir, "clustering_emergente.png")
         importancia_file = os.path.join(zone_dir, "importancia_sensores.png")
+        bloch_file = os.path.join(zone_dir, "bloch_superposicion.png")
 
         generar_estadisticas(df_clean, y, stats_file)
         graficar_superposicion(X_scaled, y, pca_file)
         graficar_clustering(X_scaled, cluster_file)
         graficar_importancia_sensores(X_scaled, y, importancia_file)
+
+        # intentar generar Bloch image para la media de X (si Aer disponible)
+        try:
+            sample = np.mean(X, axis=0)
+            # normalizar sample a parámetros del feature_map (si feature_map espera [0,pi], etc. esto puede necesitar ajuste)
+            bloch_path = generar_bloch_image(feature_map, sample, bloch_file)
+            if not bloch_path:
+                if os.path.exists(bloch_file):
+                    os.remove(bloch_file)
+        except Exception:
+            logging.exception("No se pudo generar Bloch image (continuando).")
 
         # metadata: usamos la última fecha de lectura incluida
         last_ts = df["fecha_lectura"].max()
@@ -263,6 +343,7 @@ def train_zone(zone_id):
             "pca_file": pca_file,
             "cluster_file": cluster_file,
             "importance_file": importancia_file,
+            "bloch_file": bloch_file if os.path.exists(bloch_file) else None,
             "last_trained_at": last_ts.isoformat() if last_ts is not None else None
         }
 
@@ -270,17 +351,12 @@ def train_zone(zone_id):
         logging.exception("Error en train_zone: %s", str(e))
         raise
 
-def prepare_zone_dir(zone_id):
-    zone_dir = os.path.join(OUTPUT_DIR, f"zone_{zone_id}")
-    asegurar_dir(zone_dir)
-    return zone_dir
-
 # -------------- Utilidades de inferencia ----------------
 
 def load_model_for_zone(zone_id):
     zone_dir = prepare_zone_dir(zone_id)
-    model_path = os.path.join(zone_dir, "modelo_qsvc_zone.joblib")
-    scaler_path = os.path.join(zone_dir, "scaler_qsvc_zone.joblib")
+    model_path = os.path.join(zone_dir, f"modelo_qsvc_zone_{zone_id}.joblib")
+    scaler_path = os.path.join(zone_dir, f"scaler_qsvc_zone_{zone_id}.joblib")
     if not os.path.exists(model_path) or not os.path.exists(scaler_path):
         raise FileNotFoundError("Modelo o scaler no encontrado para la zona. Entrena primero.")
     model = load(model_path)
@@ -291,7 +367,10 @@ def predict_from_values(zone_id, values_dict):
     """
     values_dict: mapa con las mismas FEATURES en el mismo orden
     """
-    X = np.array([[float(values_dict[col]) for col in FEATURE_COLUMNS]], dtype=float)
+    # Asegurar orden y conversión
+    X = np.array([[float(values_dict.get(col, np.nan)) for col in FEATURE_COLUMNS]], dtype=float)
+    if np.isnan(X).any():
+        raise ValueError("Faltan valores numéricos en values_dict para algunas features.")
     model, scaler, zone_dir = load_model_for_zone(zone_id)
     X_scaled = scaler.transform(X)
     pred = int(model.predict(X_scaled)[0])
@@ -300,12 +379,6 @@ def predict_from_values(zone_id, values_dict):
 # -------------- Reglas agrícolas sencillas --------------
 
 def interpretacion_agronomica(values_dict):
-    """
-    Regla heurística para:
-     - fertilidad
-     - riego necesario (sí/no) y hora recomendada
-     - recomendaciones de fertilizante
-    """
     temp = float(values_dict.get("temperatura", np.nan))
     hum = float(values_dict.get("humedad", np.nan))
     ph = float(values_dict.get("ph", np.nan))
@@ -319,8 +392,7 @@ def interpretacion_agronomica(values_dict):
     if not np.isnan(hum):
         if hum < 40:
             lines.append("💧 Riego recomendado: Sí (humedad baja).")
-            # recomendar hora: si temp alta => temprano/temprano y tarde
-            if temp >= 25:
+            if not np.isnan(temp) and temp >= 25:
                 lines.append("⏰ Hora recomendada: temprano en la mañana (antes de 9am) o al atardecer.")
             else:
                 lines.append("⏰ Hora recomendada: mañana o tarde según clima.")
@@ -354,7 +426,6 @@ def interpretacion_agronomica(values_dict):
         else:
             lines.append("🌾 Nivel de nutrientes adecuado.")
 
-    # Recomendación general según combinación
     if (not np.isnan(hum) and hum < 35) or (not np.isnan(nutrient_avg) and nutrient_avg < 10):
         lines.append("✅ Recomendado: Preparar riego/fertilización antes de sembrar.")
     else:
@@ -365,7 +436,6 @@ def interpretacion_agronomica(values_dict):
 # -------------- MAIN (util para pruebas) ----------------
 
 if __name__ == "__main__":
-    # Entrena zona ejemplo (si tecleas zone id)
     if len(sys.argv) >= 2:
         zid = sys.argv[1]
         out = train_zone(zid)
