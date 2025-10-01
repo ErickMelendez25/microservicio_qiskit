@@ -28,16 +28,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(mes
 
 app = FastAPI(title="🌱 Quantum Agriculture API", version="1.0")
 
-# ----------------- CORS -----------------
+# Dominios que tendrán acceso
 origins = [
-    "http://localhost:5173",   # desarrollo local con Vite
-    "http://localhost:3000",   # desarrollo local con React
-    "https://zonas.grupo-digital-nextri.com",  # tu frontend en producción
+    "http://localhost:5173",      # Para pruebas locales
+    "http://localhost:3000",      # React local
+    "https://zonas.grupo-digital-nextri.com",   # Tu frontend en producción
+    "https://qiskit-production.up.railway.app", # Otro frontend en Railway (si lo usas)
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,        # solo tu dominio y localhost
+    allow_origins=origins,        # Permitir solo estos orígenes
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
