@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Instalar dependencias del sistema necesarias (incluyendo para SymEngine)
+# Instalar dependencias del sistema necesarias
 RUN apt-get update && apt-get install -y \
     build-essential \
     libgmp-dev \
@@ -25,6 +25,8 @@ COPY . .
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
+# Puerto expuesto (Railway inyecta PORT automáticamente)
 EXPOSE 8080
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Usa PORT en lugar de un número fijo
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]

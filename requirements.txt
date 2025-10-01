@@ -11,3 +11,7 @@ qiskit==0.45.2
 qiskit-aer==0.12.2
 qiskit-machine-learning==0.6.1
 qiskit-algorithms==0.2.2
+
+# FastAPI y servidor
+fastapi==0.115.0
+uvicorn[standard]==0.30.1

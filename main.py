@@ -8,6 +8,7 @@ Expone 2 endpoints:
 """
 
 import logging
+import os
 import numpy as np
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -73,18 +74,14 @@ def predecir(input_data: SensorInput):
     Realiza una predicción usando el modelo ya entrenado.
     """
     try:
-        # Cargar modelo y scaler ya entrenados
         modelo = load(trainer.MODEL_OUT)
         scaler = load(trainer.SCALER_OUT)
 
-        # Preparar datos en el mismo orden que en el entrenamiento
         X_nuevo = np.array([[getattr(input_data, col) for col in trainer.FEATURE_COLUMNS]], dtype=float)
         X_nuevo_scaled = scaler.transform(X_nuevo)
 
-        # Predicción
         clase_pred = int(modelo.predict(X_nuevo_scaled)[0])
 
-        # Interpretación agrícola
         interpretaciones = {
             4: "🌱 Suelo con fertilidad baja, requiere nutrientes.",
             5: "🌾 Suelo con fertilidad media, condiciones aceptables.",
@@ -103,4 +100,5 @@ def predecir(input_data: SensorInput):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8080))  # Railway asigna el puerto
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
