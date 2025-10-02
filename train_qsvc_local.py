@@ -54,7 +54,7 @@ except Exception:
     AER_AVAILABLE = False
 
 # ---------- Config ----------
-TRAIN_SIZE = 300   # ajustar entre 200-500 según datos por zona
+TRAIN_SIZE = 50 #star entre 200-500 según datos por zona
 RANDOM_STATE = 42
 FEATURE_COLUMNS = [
     "temperatura", "humedad", "ph",
