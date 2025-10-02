@@ -9,6 +9,7 @@ Genera por zona en ./outputs/zone_{zone_id}/:
  - estadisticas: estadisticas_entrenamiento.csv
  - imagenes: superposicion_pca.png, clustering_emergente.png, importancia_sensores.png
  - metadata: metadata.json (last_trained_at, trained_on)
+ - interpretaciones: interpretaciones.txt
 
 Notas:
  - Ajusta las consultas SQL si tu esquema difiere.
@@ -33,7 +34,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# Qiskit (intentar usar, pero envolvemos en try/except para evitar fallos en entornos sin Aer)
+# Qiskit
 try:
     from qiskit.circuit.library import ZZFeatureMap
     from qiskit.primitives import Sampler
@@ -42,10 +43,9 @@ try:
     from qiskit.algorithms.state_fidelities import ComputeUncompute
     QISKIT_AVAILABLE = True
 except Exception:
-    # Si no está Qiskit o alguno de sus módulos, marcaremos y seguiremos con scikit-learn fallback.
     QISKIT_AVAILABLE = False
 
-# Para la visualización de estados (bloch) intentamos Aer / statevector
+# Aer
 try:
     from qiskit import Aer, transpile
     from qiskit.visualization import plot_bloch_multivector
@@ -54,7 +54,7 @@ except Exception:
     AER_AVAILABLE = False
 
 # ---------- Config ----------
-TRAIN_SIZE = 50 #star entre 200-500 según datos por zona
+TRAIN_SIZE = 50
 RANDOM_STATE = 42
 FEATURE_COLUMNS = [
     "temperatura", "humedad", "ph",
@@ -82,10 +82,6 @@ def conectar_bd():
     return conn
 
 def leer_datos(conn, zone_id=None, limit=TRAIN_SIZE*10):
-    """
-    Lee lecturas filtrando por zona (dispositivos.zona_agricola_id).
-    Devuelve un DataFrame con columnas: tipo_sensor, valor, fecha_lectura
-    """
     if zone_id is None:
         query = """
             SELECT s.tipo_sensor AS tipo_sensor, l.valor, l.fecha_lectura
@@ -112,7 +108,6 @@ def leer_datos(conn, zone_id=None, limit=TRAIN_SIZE*10):
     logging.info("Registros leídos (zone=%s): %d", str(zone_id), len(df))
     return df
 
-
 def preparar_dataset(df):
     if df is None or df.empty:
         return None, None, None
@@ -131,18 +126,14 @@ def preparar_dataset(df):
     df_pivot = df_pivot.rename(columns=rename_map)
 
     df_clean = df_pivot.dropna(how="all", subset=FEATURE_COLUMNS).copy()
-    # rellenar missing con la media por columna
     df_clean[FEATURE_COLUMNS] = df_clean[FEATURE_COLUMNS].fillna(df_clean[FEATURE_COLUMNS].mean())
 
     df_clean = df_clean.head(TRAIN_SIZE)
-
     if df_clean.shape[0] == 0:
         raise ValueError("❌ No hay datos suficientes después del pivot y limpieza.")
 
     X = df_clean[FEATURE_COLUMNS].astype(float).values
-    # etiqueta simple: promedio de sensores -> discretizar (ejemplo: fertility class)
     y = np.floor(np.mean(X, axis=1) / 10).astype(int)
-
     return X, y, df_clean
 
 def escalar_y_guardar(X, zone_dir, zone_id):
@@ -157,7 +148,7 @@ def escalar_y_guardar(X, zone_dir, zone_id):
 
 def entrenar_qsvc(X_train, y_train):
     if not QISKIT_AVAILABLE:
-        raise RuntimeError("Qiskit no está disponible en el entorno. Instala qiskit/qiskit-machine-learning.")
+        raise RuntimeError("Qiskit no está disponible en el entorno.")
 
     feature_map = ZZFeatureMap(feature_dimension=X_train.shape[1], reps=2)
     sampler = Sampler()
@@ -183,15 +174,15 @@ def graficar_superposicion(X_scaled, y, filename):
     X_pca = pca.fit_transform(X_scaled)
     plt.figure(figsize=(6, 5))
     scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=y, cmap="plasma", alpha=0.7)
-    plt.colorbar(scatter, label="Clases (colapso esperado)")
-    plt.title("🌌 Superposición cuántica (PCA de embeddings)")
-    plt.xlabel("Componente principal 1")
-    plt.ylabel("Componente principal 2")
+    plt.colorbar(scatter, label="Clases")
+    plt.title("🌌 Superposición cuántica (PCA)")
+    plt.xlabel("PC1")
+    plt.ylabel("PC2")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(filename, dpi=150)
     plt.close()
-    logging.info("🌌 Gráfico de superposición guardado en %s", filename)
+    logging.info("🌌 Gráfico PCA guardado en %s", filename)
 
 def graficar_clustering(X_scaled, filename):
     pca = PCA(n_components=2)
@@ -201,52 +192,159 @@ def graficar_clustering(X_scaled, filename):
 
     plt.figure(figsize=(6, 5))
     scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=clusters, cmap="viridis", alpha=0.7)
-    plt.colorbar(scatter, label="Clusters emergentes")
-    plt.title("🌱 Clustering emergente en embeddings cuánticos")
-    plt.xlabel("Componente principal 1")
-    plt.ylabel("Componente principal 2")
+    plt.colorbar(scatter, label="Clusters")
+    plt.title("🌱 Clustering emergente")
+    plt.xlabel("PC1")
+    plt.ylabel("PC2")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(filename, dpi=150)
     plt.close()
-    logging.info("🌱 Gráfico de clustering guardado en %s", filename)
+    logging.info("🌱 Clustering guardado en %s", filename)
 
 def graficar_importancia_sensores(X_scaled, y, filename):
     corr = pd.DataFrame(X_scaled, columns=FEATURE_COLUMNS).corrwith(pd.Series(y))
     ax = corr.plot(kind="bar", figsize=(8,5))
     ax.set_ylabel("Correlación")
-    ax.set_title("📊 Correlación de sensores con clases (colapso)")
+    ax.set_title("📊 Importancia de sensores")
     plt.grid(True, axis="y")
     plt.tight_layout()
     plt.savefig(filename, dpi=150)
     plt.close()
-    logging.info("📊 Gráfico de importancia de sensores guardado en %s", filename)
+    logging.info("📊 Importancia sensores guardada en %s", filename)
 
 def generar_bloch_image(feature_map, sample_vector, filename):
-    """
-    Intenta generar una imagen Bloch (multivector) para sample_vector usando Aer (statevector).
-    Si no está Aer disponible, se ignora.
-    """
     if not (QISKIT_AVAILABLE and AER_AVAILABLE):
-        logging.info("Aer o Qiskit no disponibles: saltando imagen Bloch.")
+        logging.info("Aer o Qiskit no disponibles.")
         return None
-
     try:
-        # crear circuito con parametros y obtener statevector
         circuit = feature_map.bind_parameters(sample_vector)
         backend = Aer.get_backend('statevector_simulator')
         qc_transpiled = transpile(circuit, backend=backend)
-        job = backend.run(qc_transpiled) if hasattr(backend, "run") else backend.run(qc_transpiled)
-        result = job.result()
+        result = backend.run(qc_transpiled).result()
         state = result.get_statevector()
         fig = plot_bloch_multivector(state)
         fig.savefig(filename, dpi=150)
         plt.close(fig)
-        logging.info("🔵 Imagen Bloch guardada en %s", filename)
+        logging.info("🔵 Bloch guardado en %s", filename)
         return filename
     except Exception as e:
-        logging.exception("No se pudo generar Bloch image: %s", str(e))
+        logging.exception("Bloch falló: %s", str(e))
         return None
+
+# ----------- Interpretaciones -----------
+
+def interpretar_superposicion(pca_file):
+    return f"""
+🌌 Interpretación de {os.path.basename(pca_file)}:
+- Colores separados → modelo distingue condiciones.
+- Colores mezclados → datos se solapan, recopilar más registros.
+"""
+
+def interpretar_clustering(cluster_file):
+    return f"""
+🌱 Interpretación de {os.path.basename(cluster_file)}:
+- Cada color = grupo natural de suelo.
+- Si un cluster domina → parcela homogénea.
+- Si varios → variabilidad alta.
+"""
+
+def interpretar_importancia(importance_file):
+    return f"""
+📊 Interpretación de {os.path.basename(importance_file)}:
+- Barras altas = sensor más influyente.
+- Ej: si pH alto → acidez manda.
+- Si humedad domina → riego clave.
+"""
+
+def interpretar_bloch(bloch_file):
+    return f"""
+🔵 Interpretación de {os.path.basename(bloch_file)}:
+- La esfera Bloch confirma representación cuántica.
+- Dispersión amplia → buena separación.
+- Concentrado → posible subajuste.
+"""
+
+def cultivos_recomendados(values_dict):
+    temp = float(values_dict.get("temperatura", np.nan))
+    hum = float(values_dict.get("humedad", np.nan))
+    ph = float(values_dict.get("ph", np.nan))
+    nitr = float(values_dict.get("nitrógeno", np.nan))
+    fosf = float(values_dict.get("fósforo", np.nan))
+    pot = float(values_dict.get("potasio", np.nan))
+    recomendaciones = []
+
+    if not np.isnan(ph) and not np.isnan(hum):
+        if ph < 5.5:
+            if hum > 50:
+                recomendaciones.append("🌱 Papa, camote, café, piña.")
+            else:
+                recomendaciones.append("🌱 Papa y camote.")
+        elif 5.5 <= ph <= 7.5:
+            if 45 <= hum <= 65:
+                recomendaciones.append("🌱 Maíz, trigo, frijol, hortalizas.")
+            elif hum > 65:
+                recomendaciones.append("🌱 Arroz, alfalfa, pastos.")
+            else:
+                recomendaciones.append("🌱 Quinua, papa (con riego).")
+        else:
+            recomendaciones.append("🌱 Cebada, remolacha, espárrago.")
+
+    nutrient_avg = np.nanmean([nitr, fosf, pot])
+    if not np.isnan(nutrient_avg):
+        if nutrient_avg < 10:
+            recomendaciones.append("⚠️ Nutrientes bajos — leguminosas.")
+        elif nutrient_avg < 25:
+            recomendaciones.append("💡 Nutrientes moderados — maíz, papa.")
+        else:
+            recomendaciones.append("✅ Nutrientes altos — tomate, híbridos.")
+    return "\n".join(recomendaciones)
+
+def interpretacion_agronomica(values_dict):
+    base = []
+    temp = float(values_dict.get("temperatura", np.nan))
+    hum = float(values_dict.get("humedad", np.nan))
+    ph = float(values_dict.get("ph", np.nan))
+    nitr = float(values_dict.get("nitrógeno", np.nan))
+    fosf = float(values_dict.get("fósforo", np.nan))
+    pot = float(values_dict.get("potasio", np.nan))
+
+    if not np.isnan(hum):
+        if hum < 40:
+            base.append("💧 Riego recomendado: Sí (humedad baja).")
+        elif hum < 55:
+            base.append("💧 Riego recomendado: Monitorear.")
+        else:
+            base.append("💧 Riego recomendado: No necesario.")
+    if not np.isnan(ph):
+        if ph < 5.5:
+            base.append("🧪 pH ácido, aplicar cal.")
+        elif ph > 7.5:
+            base.append("🧪 pH alcalino, usar enmiendas.")
+        else:
+            base.append("🧪 pH óptimo.")
+    nutrient_avg = np.nanmean([nitr, fosf, pot])
+    if not np.isnan(nutrient_avg):
+        if nutrient_avg < 10:
+            base.append("🌾 Nutrientes bajos — fertilizar urgente.")
+        elif nutrient_avg < 25:
+            base.append("🌾 Nutrientes moderados — fertilización leve.")
+        else:
+            base.append("🌾 Nutrientes adecuados.")
+    base.append("🔍 Cultivos recomendados:")
+    base.append(cultivos_recomendados(values_dict))
+    return "\n".join(base)
+
+def guardar_interpretaciones(zone_dir, pca_file, cluster_file, importance_file, bloch_file):
+    interpretaciones = []
+    interpretaciones.append(interpretar_superposicion(pca_file))
+    interpretaciones.append(interpretar_clustering(cluster_file))
+    interpretaciones.append(interpretar_importancia(importance_file))
+    if bloch_file:
+        interpretaciones.append(interpretar_bloch(bloch_file))
+    with open(os.path.join(zone_dir, "interpretaciones.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(interpretaciones))
+    logging.info("📝 Interpretaciones guardadas en interpretaciones.txt")
 
 # -------------- Metadata ----------------
 
@@ -259,13 +357,6 @@ def guardar_metadata(zone_dir, last_data_ts):
         json.dump(meta, f)
     logging.info("Metadata guardada en %s", zone_dir)
 
-def leer_metadata(zone_dir):
-    meta_path = os.path.join(zone_dir, "metadata.json")
-    if not os.path.exists(meta_path):
-        return {}
-    with open(meta_path, "r") as f:
-        return json.load(f)
-
 # -------------- Entrenamiento por zona --------------
 
 def prepare_zone_dir(zone_id):
@@ -274,15 +365,11 @@ def prepare_zone_dir(zone_id):
     return zone_dir
 
 def train_zone(zone_id):
-    """
-    Entrena (o reentrena) para una zona específica.
-    """
     try:
         cargar_env()
         conn = conectar_bd()
         df = leer_datos(conn, zone_id=zone_id)
         conn.close()
-
         if df is None or df.empty:
             raise ValueError("No hay datos para la zona solicitada.")
 
@@ -290,22 +377,16 @@ def train_zone(zone_id):
         zone_dir = prepare_zone_dir(zone_id)
         X_scaled, scaler_file = escalar_y_guardar(X, zone_dir, zone_id)
 
-        if not QISKIT_AVAILABLE:
-            raise RuntimeError("Qiskit no disponible en el entorno. Instala qiskit y qiskit-machine-learning.")
-
         model, qkernel, feature_map = entrenar_qsvc(X_scaled, y)
-
         model_file = os.path.join(zone_dir, f"modelo_qsvc_zone_{zone_id}.joblib")
         dump(model, model_file)
         logging.info("✅ Modelo guardado en %s", model_file)
 
-        # Métricas y gráficos
         y_pred = model.predict(X_scaled)
         acc = accuracy_score(y, y_pred)
-        logging.info("🎯 Accuracy del modelo (zone %s): %.2f%%", zone_id, acc*100)
+        logging.info("🎯 Accuracy (zone %s): %.2f%%", zone_id, acc*100)
         logging.info("\n" + classification_report(y, y_pred))
 
-        # Guardar outputs
         stats_file = os.path.join(zone_dir, "estadisticas_entrenamiento.csv")
         pca_file = os.path.join(zone_dir, "superposicion_pca.png")
         cluster_file = os.path.join(zone_dir, "clustering_emergente.png")
@@ -317,18 +398,17 @@ def train_zone(zone_id):
         graficar_clustering(X_scaled, cluster_file)
         graficar_importancia_sensores(X_scaled, y, importancia_file)
 
-        # intentar generar Bloch image para la media de X (si Aer disponible)
         try:
             sample = np.mean(X, axis=0)
-            # normalizar sample a parámetros del feature_map (si feature_map espera [0,pi], etc. esto puede necesitar ajuste)
             bloch_path = generar_bloch_image(feature_map, sample, bloch_file)
-            if not bloch_path:
-                if os.path.exists(bloch_file):
-                    os.remove(bloch_file)
+            if not bloch_path and os.path.exists(bloch_file):
+                os.remove(bloch_file)
         except Exception:
-            logging.exception("No se pudo generar Bloch image (continuando).")
+            logging.exception("No se pudo generar Bloch image.")
+            bloch_path = None
 
-        # metadata: usamos la última fecha de lectura incluida
+        guardar_interpretaciones(zone_dir, pca_file, cluster_file, importancia_file, bloch_path)
+
         last_ts = df["fecha_lectura"].max()
         if isinstance(last_ts, str):
             last_ts = pd.to_datetime(last_ts)
@@ -341,97 +421,36 @@ def train_zone(zone_id):
             "pca_file": pca_file,
             "cluster_file": cluster_file,
             "importance_file": importancia_file,
-            "bloch_file": bloch_file if os.path.exists(bloch_file) else None,
+            "bloch_file": bloch_path if bloch_path else None,
+            "interpretaciones": os.path.join(zone_dir, "interpretaciones.txt"),
             "last_trained_at": last_ts.isoformat() if last_ts is not None else None
         }
-
     except Exception as e:
         logging.exception("Error en train_zone: %s", str(e))
         raise
 
-# -------------- Utilidades de inferencia ----------------
+# -------------- Inferencia ----------------
 
 def load_model_for_zone(zone_id):
     zone_dir = prepare_zone_dir(zone_id)
     model_path = os.path.join(zone_dir, f"modelo_qsvc_zone_{zone_id}.joblib")
     scaler_path = os.path.join(zone_dir, f"scaler_qsvc_zone_{zone_id}.joblib")
     if not os.path.exists(model_path) or not os.path.exists(scaler_path):
-        raise FileNotFoundError("Modelo o scaler no encontrado para la zona. Entrena primero.")
+        raise FileNotFoundError("Modelo o scaler no encontrado.")
     model = load(model_path)
     scaler = load(scaler_path)
     return model, scaler, zone_dir
 
 def predict_from_values(zone_id, values_dict):
-    """
-    values_dict: mapa con las mismas FEATURES en el mismo orden
-    """
-    # Asegurar orden y conversión
     X = np.array([[float(values_dict.get(col, np.nan)) for col in FEATURE_COLUMNS]], dtype=float)
     if np.isnan(X).any():
-        raise ValueError("Faltan valores numéricos en values_dict para algunas features.")
+        raise ValueError("Faltan valores en values_dict.")
     model, scaler, zone_dir = load_model_for_zone(zone_id)
     X_scaled = scaler.transform(X)
     pred = int(model.predict(X_scaled)[0])
     return pred, X_scaled, zone_dir
 
-# -------------- Reglas agrícolas sencillas --------------
-
-def interpretacion_agronomica(values_dict):
-    temp = float(values_dict.get("temperatura", np.nan))
-    hum = float(values_dict.get("humedad", np.nan))
-    ph = float(values_dict.get("ph", np.nan))
-    nitr = float(values_dict.get("nitrógeno", np.nan))
-    fosf = float(values_dict.get("fósforo", np.nan))
-    pot = float(values_dict.get("potasio", np.nan))
-
-    lines = []
-
-    # Riego
-    if not np.isnan(hum):
-        if hum < 40:
-            lines.append("💧 Riego recomendado: Sí (humedad baja).")
-            if not np.isnan(temp) and temp >= 25:
-                lines.append("⏰ Hora recomendada: temprano en la mañana (antes de 9am) o al atardecer.")
-            else:
-                lines.append("⏰ Hora recomendada: mañana o tarde según clima.")
-        elif hum < 55:
-            lines.append("💧 Riego recomendado: Monitorear (humedad moderada).")
-        else:
-            lines.append("💧 Riego recomendado: No necesario ahora (humedad adecuada).")
-    else:
-        lines.append("💧 Riego: dato de humedad no disponible.")
-
-    # pH
-    if not np.isnan(ph):
-        if ph < 5.5:
-            lines.append("🧪 pH ácido, puede necesitar calificación antes de sembrar.")
-        elif ph > 7.5:
-            lines.append("🧪 pH alcalino, estudiar enmiendas específicas.")
-        else:
-            lines.append("🧪 pH dentro de rango óptimo para la mayoría de cultivos.")
-    else:
-        lines.append("🧪 pH: dato no disponible.")
-
-    # Nutrientes
-    nutrient_avg = np.nanmean([nitr, fosf, pot])
-    if np.isnan(nutrient_avg):
-        lines.append("🌾 Nutrientes: datos incompletos.")
-    else:
-        if nutrient_avg < 10:
-            lines.append("🌾 Nivel de nutrientes bajo — se recomienda fertilización.")
-        elif nutrient_avg < 25:
-            lines.append("🌾 Nivel de nutrientes moderado — fertilización leve si es cultivo exigente.")
-        else:
-            lines.append("🌾 Nivel de nutrientes adecuado.")
-
-    if (not np.isnan(hum) and hum < 35) or (not np.isnan(nutrient_avg) and nutrient_avg < 10):
-        lines.append("✅ Recomendado: Preparar riego/fertilización antes de sembrar.")
-    else:
-        lines.append("✅ Recomendado: Condiciones aceptables para sembrar si el cultivo es resistente.")
-
-    return "\n".join(lines)
-
-# -------------- MAIN (util para pruebas) ----------------
+# -------------- MAIN ----------------
 
 if __name__ == "__main__":
     if len(sys.argv) >= 2:
