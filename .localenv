@@ -1,0 +1,12 @@
+# Configuración de base de datos MySQL
+DB_CONNECTION=mysql
+DB_HOST=localhost 
+DB_PORT=3306 
+DB_NAME=tinka
+DB_USER=Erick
+DB_PASSWORD=erickMV123@
+PORT=8000
+
+
+QISKIT_TOKEN=72IvutD6KUCnINCR-BXU0ieNdz8UsPqguVeALXYOnfVZ
+QISKIT_INSTANCE=crn:v1:bluemix:public:quantum-computing:us-east:a/5ed21298e0344467b184f8c2a142795b:2857b2c2-69b2-415d-b9a1-d4c4b1e10cfe::

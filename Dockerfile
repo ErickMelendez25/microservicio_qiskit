@@ -1,5 +1,8 @@
-# Usa una base estable de Debian Bullseye para evitar paquetes faltantes
+# Usa una versión estable y fija de Debian (Bullseye) compatible con todos los paquetes
 FROM python:3.10-slim-bullseye
+
+# Evitar interacción durante la instalación
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Instalar dependencias del sistema necesarias (compiladores, librerías matemáticas y gráficas)
 RUN apt-get update && apt-get install -y \
@@ -13,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     gfortran \
     libffi-dev \
     libssl-dev \
-    libgl1-mesa-glx \
+    libgl1 \
     libxrender1 \
     libxext6 \
     libsm6 \
